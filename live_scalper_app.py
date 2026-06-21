@@ -1,3 +1,4 @@
+
 import streamlit as st
 import yfinance as yf
 import datetime
@@ -12,6 +13,7 @@ st.set_page_config(
     layout="wide"
 )
 
+# Auto-refresh every 30 seconds
 st_autorefresh(interval=30000, key="scalper_refresh")
 
 # ── Header ──
@@ -21,24 +23,34 @@ now = datetime.datetime.now(IST)
 st.markdown(f"<p style='text-align:center; color:gray;'>Last Updated: {now.strftime('%I:%M:%S %p IST')}</p>", unsafe_allow_html=True)
 st.markdown("---")
 
-# ── Market Hours Check ──
+# ── Market Hours Check & Sandbox Override ──
+st.sidebar.header("⚙️ System Control")
+sandbox_mode = st.sidebar.toggle(
+    "🧪 Weekend Sandbox Mode", 
+    value=False, 
+    help="Only for testing UI. MUST be OFF during real trading hours."
+)
+
+if sandbox_mode:
+    st.sidebar.error("⚠️ SANDBOX MODE ACTIVE\nData may be stale. Do NOT trade real money.")
+
 market_open  = now.replace(hour=9,  minute=15, second=0, microsecond=0)
 market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
 is_weekday   = now.weekday() < 5
 is_market_open = is_weekday and market_open <= now <= market_close
 
-if not is_market_open:
-    st.warning("⏰ Market is closed. App runs live between 9:15 AM and 3:30 PM on weekdays.")
+if not is_market_open and not sandbox_mode:
+    st.warning("⏰ Market is closed. Turn on 'Weekend Sandbox Mode' in the sidebar to test your UI layout!")
     st.stop()
 
 # ── Session State ──
-if "active_trade"    not in st.session_state:
+if "active_trade" not in st.session_state:
     st.session_state.active_trade = None
 if "trade_confirmed" not in st.session_state:
     st.session_state.trade_confirmed = False
-if "signal_pending"  not in st.session_state:
+if "signal_pending" not in st.session_state:
     st.session_state.signal_pending = None
-if "trade_log"       not in st.session_state:
+if "trade_log" not in st.session_state:
     st.session_state.trade_log = []
 
 # ── Watchlist ──
@@ -150,17 +162,13 @@ def scan_stock(symbol, name):
                 "volume_ok": volume_ok,
                 "direction": direction_30m
             }
-
         return None
-
     except Exception:
         return None
 
 
 # ════════════════════════════════════════
 # SECTION 1 — ACTIVE TRADE MONITOR
-# If trade is confirmed, show monitor only
-# No new signals shown until trade is closed
 # ════════════════════════════════════════
 
 if st.session_state.trade_confirmed and st.session_state.active_trade:
@@ -168,44 +176,40 @@ if st.session_state.trade_confirmed and st.session_state.active_trade:
     live_price = get_live_price(trade["symbol"])
 
     if live_price:
-        is_buy  = trade["signal"] == "BUY"
-        entry   = trade["price"]
-        target  = trade["target"]
-        sl      = trade["stop_loss"]
+        is_buy    = trade["signal"] == "BUY"
+        entry     = trade["price"]
+        target    = trade["target"]
+        sl        = trade["stop_loss"]
+        trade_qty = trade.get("qty", 1)
 
         if is_buy:
-            pnl        = round((live_price - entry) * trade.get("qty", 1), 2)
+            pnl        = round((live_price - entry) * trade_qty, 2)
             hit_target = live_price >= target
             hit_sl     = live_price <= sl
         else:
-            pnl        = round((entry - live_price) * trade.get("qty", 1), 2)
+            pnl        = round((entry - live_price) * trade_qty, 2)
             hit_target = live_price <= target
             hit_sl     = live_price >= sl
 
         pnl_color = "#28a745" if pnl >= 0 else "#dc3545"
 
-        # ── EXIT ALERT ──
         if hit_target:
             st.markdown(f"""
-                <div style="background:#d4edda; border:3px solid #28a745;
-                            padding:20px; border-radius:12px; text-align:center;">
+                <div style="background:#d4edda; border:3px solid #28a745; padding:20px; border-radius:12px; text-align:center;">
                     <h1 style="color:#155724; margin:0;">🎯 TARGET HIT!</h1>
                     <h2 style="color:#155724;">{trade['name']} reached ₹{live_price}</h2>
                     <h3 style="color:#155724;">EXIT YOUR POSITION NOW ON KITE</h3>
-                    <p style="font-size:18px;">Your target was ₹{target}</p>
+                    <p style="font-size:18px;">Your target was ₹{target} (Qty: {trade_qty})</p>
                 </div>
             """, unsafe_allow_html=True)
-
-            # Browser notification
+            
             st.markdown("""
                 <script>
                 if (Notification.permission === 'granted') {
-                    new Notification('🎯 TARGET HIT! Exit your position NOW on Kite!');
+                    new Notification('🎯 TARGET HIT! Exit position NOW on Kite!');
                 } else if (Notification.permission !== 'denied') {
-                    Notification.requestPermission().then(function(permission) {
-                        if (permission === 'granted') {
-                            new Notification('🎯 TARGET HIT! Exit your position NOW on Kite!');
-                        }
+                    Notification.requestPermission().then(function(p) {
+                        if (p === 'granted') { new Notification('🎯 TARGET HIT! Exit position NOW!'); }
                     });
                 }
                 </script>
@@ -213,57 +217,43 @@ if st.session_state.trade_confirmed and st.session_state.active_trade:
 
         elif hit_sl:
             st.markdown(f"""
-                <div style="background:#f8d7da; border:3px solid #dc3545;
-                            padding:20px; border-radius:12px; text-align:center;">
+                <div style="background:#f8d7da; border:3px solid #dc3545; padding:20px; border-radius:12px; text-align:center;">
                     <h1 style="color:#721c24; margin:0;">🛑 STOP LOSS HIT!</h1>
                     <h2 style="color:#721c24;">{trade['name']} dropped to ₹{live_price}</h2>
                     <h3 style="color:#721c24;">EXIT YOUR POSITION NOW ON KITE</h3>
-                    <p style="font-size:18px;">Your stop loss was ₹{sl}</p>
+                    <p style="font-size:18px;">Your stop loss was ₹{sl} (Qty: {trade_qty})</p>
                 </div>
             """, unsafe_allow_html=True)
-
+            
             st.markdown("""
                 <script>
                 if (Notification.permission === 'granted') {
-                    new Notification('🛑 STOP LOSS HIT! Exit your position NOW on Kite!');
+                    new Notification('🛑 STOP LOSS HIT! Exit position NOW on Kite!');
                 } else if (Notification.permission !== 'denied') {
-                    Notification.requestPermission().then(function(permission) {
-                        if (permission === 'granted') {
-                            new Notification('🛑 STOP LOSS HIT! Exit your position NOW on Kite!');
-                        }
+                    Notification.requestPermission().then(function(p) {
+                        if (p === 'granted') { new Notification('🛑 STOP LOSS HIT! Exit position NOW!'); }
                     });
                 }
                 </script>
             """, unsafe_allow_html=True)
 
         else:
-            # Trade still running — show live monitor
             st.markdown(f"""
-                <div style="background:#fff3cd; border:2px solid #ffc107;
-                            padding:20px; border-radius:12px;">
-                    <h2 style="color:#856404; margin:0 0 10px 0;">
-                        📊 TRADE ACTIVE — {trade['name']} ({trade['signal']})
-                    </h2>
+                <div style="background:#fff3cd; border:2px solid #ffc107; padding:20px; border-radius:12px;">
+                    <h2 style="color:#856404; margin:0 0 10px 0;">📊 TRADE ACTIVE — {trade['name']} ({trade['signal']})</h2>
                     <table style="width:100%; font-size:16px; color:#856404;">
                         <tr>
-                            <td>💰 <b>Entry</b></td>
-                            <td>₹{entry}</td>
-                            <td>📡 <b>Live Price</b></td>
-                            <td>₹{live_price}</td>
+                            <td>💰 <b>Entry</b></td><td>₹{entry}</td>
+                            <td>📡 <b>Live Price</b></td><td>₹{live_price}</td>
                         </tr>
                         <tr>
-                            <td>🎯 <b>Target</b></td>
-                            <td>₹{target}</td>
-                            <td>🛑 <b>Stop Loss</b></td>
-                            <td>₹{sl}</td>
+                            <td>🎯 <b>Target</b></td><td>₹{target}</td>
+                            <td>🛑 <b>Stop Loss</b></td><td>₹{sl}</td>
                         </tr>
                         <tr>
+                            <td>📦 <b>Quantity</b></td><td>{trade_qty} Shares</td>
                             <td>💸 <b>Live P&L</b></td>
-                            <td colspan="3">
-                                <span style="color:{pnl_color}; font-size:20px; font-weight:bold;">
-                                    ₹{pnl:+g}
-                                </span>
-                            </td>
+                            <td><span style="color:{pnl_color}; font-size:20px; font-weight:bold;">₹{pnl:+g}</span></td>
                         </tr>
                     </table>
                 </div>
@@ -271,18 +261,17 @@ if st.session_state.trade_confirmed and st.session_state.active_trade:
 
         st.markdown("---")
 
-        # Manual exit button
         col1, col2 = st.columns(2)
         with col1:
             if st.button("✅ I Exited This Trade", use_container_width=True, type="primary"):
-                # Log the trade
                 st.session_state.trade_log.append({
                     "time":   now.strftime("%I:%M %p"),
                     "stock":  trade["name"],
                     "signal": trade["signal"],
                     "entry":  entry,
                     "exit":   live_price,
-                    "pnl":    pnl
+                    "pnl":    pnl,
+                    "qty":    trade_qty
                 })
                 st.session_state.active_trade    = None
                 st.session_state.trade_confirmed = False
@@ -290,17 +279,14 @@ if st.session_state.trade_confirmed and st.session_state.active_trade:
                 st.rerun()
 
         with col2:
-            st.info("🔒 No new signals until you exit this trade.")
-
-    st.stop()
+            st.info("🔒 Scanner locked until active trade concludes.")
 
 
 # ════════════════════════════════════════
 # SECTION 2 — SIGNAL CONFIRMATION
-# Signal found — ask if trade was taken
 # ════════════════════════════════════════
 
-if st.session_state.signal_pending and not st.session_state.trade_confirmed:
+elif st.session_state.signal_pending and not st.session_state.trade_confirmed:
     s = st.session_state.signal_pending
     is_buy     = s["signal"] == "BUY"
     bg_color   = "#d4edda" if is_buy else "#f8d7da"
@@ -309,39 +295,37 @@ if st.session_state.signal_pending and not st.session_state.trade_confirmed:
     icon       = "🟢" if is_buy else "🔴"
 
     st.markdown(f"""
-        <div style="background:{bg_color}; border:3px solid {border};
-                    padding:20px; border-radius:12px; margin-bottom:20px;">
-            <h2 style="color:{text_color}; margin:0 0 10px 0;">
-                {icon} {s['signal']} SIGNAL — {s['name']}
-            </h2>
+        <div style="background:{bg_color}; border:3px solid {border}; padding:20px; border-radius:12px; margin-bottom:20px;">
+            <h2 style="color:{text_color}; margin:0 0 10px 0;">{icon} {s['signal']} SIGNAL — {s['name']}</h2>
             <table style="width:100%; font-size:16px; color:{text_color};">
                 <tr>
-                    <td>💰 <b>Entry Price</b></td>
-                    <td>₹{s['price']}</td>
-                    <td>📈 <b>30-Min Trend</b></td>
-                    <td>{s['direction']} ✅</td>
+                    <td>💰 <b>Entry Price</b></td><td>₹{s['price']}</td>
+                    <td>📈 <b>30-Min Trend</b></td><td>{s['direction']} ✅</td>
                 </tr>
                 <tr>
-                    <td>🎯 <b>Target (1%)</b></td>
-                    <td>₹{s['target']}</td>
-                    <td>📊 <b>EMA Filter</b></td>
-                    <td>✅ Confirmed</td>
+                    <td>🎯 <b>Target (1%)</b></td><td>₹{s['target']}</td>
+                    <td>📊 <b>EMA Filter</b></td><td>✅ Confirmed</td>
                 </tr>
                 <tr>
-                    <td>🛑 <b>Stop Loss (0.5%)</b></td>
-                    <td>₹{s['stop_loss']}</td>
-                    <td>📦 <b>Volume</b></td>
-                    <td>Above Avg ✅</td>
+                    <td>🛑 <b>Stop Loss (0.5%)</b></td><td>₹{s['stop_loss']}</td>
+                    <td>📦 <b>Volume</b></td><td>Above Avg ✅</td>
                 </tr>
             </table>
         </div>
     """, unsafe_allow_html=True)
+
+    st.markdown("### 🧮 Sizing Confirmation")
+    input_qty = st.number_input(
+        "Enter Execution Quantity",
+        min_value=1, max_value=200, value=10
+    )
 
     st.markdown("### Did you take this trade on Kite?")
     col1, col2 = st.columns(2)
 
     with col1:
         if st.button("✅ YES — I Took This Trade", use_container_width=True, type="primary"):
+            s["qty"] = input_qty
             st.session_state.active_trade    = s
             st.session_state.trade_confirmed = True
             st.rerun()
@@ -352,76 +336,74 @@ if st.session_state.signal_pending and not st.session_state.trade_confirmed:
             st.session_state.trade_confirmed = False
             st.rerun()
 
-    st.stop()
-
 
 # ════════════════════════════════════════
-# SECTION 3 — SIGNAL SCANNER
-# Only runs when no active trade
+# SECTION 3 — SIGNAL SCANNER & GLOBALS
 # ════════════════════════════════════════
 
-# ── NIFTY mood bar ──
-try:
-    nifty_df     = yf.Ticker("^NSEI").history(period="1d", interval="1m")
-    nifty_price  = round(float(nifty_df['Close'].iloc[-1]), 2)
-    nifty_open   = round(float(nifty_df['Open'].iloc[0]),  2)
-    nifty_change = round(nifty_price - nifty_open, 2)
-    nifty_pct    = round((nifty_change / nifty_open) * 100, 2)
-    nifty_mood   = "🟢 BULLISH" if nifty_change > 0 else "🔴 BEARISH"
-except Exception:
-    nifty_price  = 0
-    nifty_change = 0
-    nifty_pct    = 0
-    nifty_mood   = "⚪ NEUTRAL"
-
-col1, col2, col3 = st.columns(3)
-col1.metric("NIFTY 50",     f"₹{nifty_price}", f"{nifty_pct}%")
-col2.metric("Market Mood",  nifty_mood)
-col3.metric("Status",       "🟢 Scanning..." if not st.session_state.active_trade else "🔒 Trade Active")
-
-st.markdown("---")
-st.markdown("### 📊 Scanning 10 Stocks...")
-
-progress = st.progress(0)
-status   = st.empty()
-found_signal = None
-
-for idx, (name, symbol) in enumerate(WATCHLIST.items()):
-    status.text(f"Checking {name}... ({idx+1}/{len(WATCHLIST)})")
-    result = scan_stock(symbol, name)
-
-    if result and result["signal"] in ["BUY", "SELL"]:
-        found_signal = result
-        progress.progress(1.0)
-        break
-
-    progress.progress((idx + 1) / len(WATCHLIST))
-
-progress.empty()
-status.empty()
-
-if found_signal:
-    st.session_state.signal_pending = found_signal
-    st.rerun()
 else:
-    st.info(
-        f"😴 No signal found right now.\n\n"
-        f"All filters checked — OHOL + Volume + EMA + 30-Min Direction.\n\n"
-        f"App auto-refreshes every 30 seconds. Stay ready."
-    )
+    try:
+        nifty_df     = yf.Ticker("^NSEI").history(period="1d", interval="1m")
+        nifty_price  = round(float(nifty_df['Close'].iloc[-1]), 2)
+        nifty_open   = round(float(nifty_df['Open'].iloc[0]),  2)
+        nifty_change = round(nifty_price - nifty_open, 2)
+        nifty_pct    = round((nifty_change / nifty_open) * 100, 2)
+        nifty_mood   = "🟢 BULLISH" if nifty_change > 0 else "🔴 BEARISH"
+    except Exception:
+        nifty_price, nifty_change, nifty_pct = 0, 0, 0
+        nifty_mood = "⚪ NEUTRAL"
 
-# ── Trade Log ──
+    m_col1, m_col2, m_col3 = st.columns(3)
+    m_col1.metric("NIFTY 50",     f"₹{nifty_price}", f"{nifty_pct}%")
+    m_col2.metric("Market Mood",  nifty_mood)
+    m_col3.metric("Status",       "🟢 Scanning...")
+
+    st.markdown("---")
+    st.markdown("### 📊 Scanning 10 Stocks...")
+
+    progress = st.progress(0)
+    status   = st.empty()
+    found_signal = None
+
+    for idx, (name, symbol) in enumerate(WATCHLIST.items()):
+        status.text(f"Checking {name}... ({idx+1}/{len(WATCHLIST)})")
+        result = scan_stock(symbol, name)
+
+        if result and result["signal"] in ["BUY", "SELL"]:
+            found_signal = result
+            progress.progress(1.0)
+            break
+
+        progress.progress((idx + 1) / len(WATCHLIST))
+
+    progress.empty()
+    status.empty()
+
+    if found_signal:
+        st.session_state.signal_pending = found_signal
+        st.rerun()
+    else:
+        st.info(
+            f"😴 No signal found right now.\n\n"
+            f"All filters checked — Volume + EMA + 30-Min Direction.\n\n"
+            f"App auto-refreshes every 30 seconds. Stay ready."
+        )
+
+# ── Trade Log (Always Visible) ──
 if st.session_state.trade_log:
     st.markdown("---")
     st.markdown("### 📜 Today's Trade Log")
     for t in reversed(st.session_state.trade_log):
-        pnl_color = "green" if t['pnl'] >= 0 else "red"
+        pnl_color   = "green" if t['pnl'] >= 0 else "red"
+        qty_display = t.get('qty', 'N/A')
         st.markdown(
             f"**{t['time']}** | {t['stock']} | {t['signal']} | "
             f"Entry ₹{t['entry']} → Exit ₹{t['exit']} | "
-            f"<span style='color:{pnl_color};'>₹{t['pnl']:+g}</span>",
+            f"<span style='color:{pnl_color}; font-weight:bold;'>₹{t['pnl']:+g}</span> | "
+            f"📦 Qty: {qty_display}",
             unsafe_allow_html=True
         )
 
 st.markdown("---")
 st.caption("⚠️ Paper trade first. Always verify on Kite. Never risk more than 1% per trade.")
+
